@@ -1,23 +1,66 @@
-def stop_points_based_segmentation(trajectories, identifier='mmsi', speed_threshold=1.5, distance_threshold=5, time_threshold=300):
+def side_search(partitioned_trajectory, center_point, distance_threshold, time_threshold, speed_threshold):
     """
-    Given a time sorted ship's trajectory, 'stop_points_calculate' finds the points of the given ship based on 
-    the criteria stated by the threshold variables(speed_threshold, distance_threshold).
+    Used for calculating the left and right limits of a trajectory given a center point and the needed conditions.
+    """
+    copy = partitioned_trajectory.copy(deep=False)
+    # Calculates the haversine distance between the center and the remaining side points
+    copy['d_distance'] = _distance_difference(copy, center_point)
+    # Calculates the time difference between the center and the ramining side points
+    copy['d_time'] = np.abs(copy['timestamp'] - center_point['timestamp'])
+
+    try:
+        # If a point that satisfying the above conditions exists, return it
+        # otherwise reutrn None
+        return copy[(copy['d_distance'] <= distance_threshold) 
+                    & (copy['d_time'] <= time_threshold) 
+                    & (copy['calc_speed'] <= speed_threshold) ]['d_distance'].idxmax()
+    except ValueError:
+        return None
+
+
     
-    A candidate stop points is a stop point with speed over ground speed less than the given threshold. For each 
-    candidate stop point, the algorithm performs a left search for finding a point Xl given that 
-    distance(Xl, candidate_point) <= distance_threshold and a right search. 
+def stop_points_based_segmentation(trajectories, speed_threshold=2.0, distance_threshold=5.0, time_threshold=600):
+    """
+    Given a DataFrame with lon, lat, timestamp, speed and an identifier column where each row describes a time ordered
+    gps point, 'stop_points_based_segmentation' calculates the stop points and segments the DataFrame into individual
+    trips with a beginning and end.
     
-    If time_difference(Xl, Xr) >= time_threshold then the candidate point is appended at the list of stop points. 
+    Step 1:
+    For each unique identifier(could be a ship's MMSI or generally a number that describes unique moving objects) the
+    algorithms begins by calculating the candidate stop points. A candidate stop point is simply a point with moving speed
+    less than the given parameter for the speed_threshold.
     
-    In other words if the ship needed more than the time_threshold to make the distance stated by the distance_threshold
-    a stop point exists.
+    Step 2:
+    For each candidate stop point, the algorithm performs a left search with radius given by the distance_threshold. For
+    example if the given threshold is 2 nautical miles it searches for all points under the distance bound that has a speed
+    higher than the threshold and time difference lower than the time_threshold. From these points it returns the one with the
+    higher distance. The same procedure goes by for the right part of the trajectory.
+    
+    Step 3:
+    If the time difference between the left and the right limit is more than the given time threshold then the point is assigned
+    to the stop points set and the algorithm continious inspecting the other candidates points. In other words if the moving
+    object completed the distance between the left and the right point in more than the threshold the center this distance
+    is a stop point.
+    
+    ***
+    For the 2nd step we could just loop through the left and right of each point and stop when the distance's limit is
+    exceeded. We choosed not to follow this approach as Python's higher level loops where not as efficienty as Pandas
+    indexing and selecting. 
+    
+    Thus during selecting the row with maximum distance under the given distance threshold we introduce two more conditional 
+    checks, the time based and speed check. By this way, we avoid choosing left/right limits that are close in distance but have 
+    a high time difference. Imagine if the object passed by the same spot before without stoping, it would be under the
+    distance threshould but this could have happened a different time - window.
+    
+    In the same manner, the speed threshold condition avoids continious stop points.
     
     Arguments:
         trajectories {DataFrame} -- Data in Pandas DataFrame format. The geospatial data should be
-                                     come along with their mmsi, timestamp and speed.
+                                     come along with their identifier, speed, lon, lat and timestamp
+                                     columns.
                                      
-        identifier (string) -- Used for aggregating the trajectories dataframe into seperated groups. 
-                               By default it's the ship's MMSI. It could also be a custom calculated id.
+        identifier (int) -- Used for aggregating the trajectories dataframe into seperated groups. 
+                            By default it's the ship's MMSI. It could also be a custom calculated id.
                                        
         speed_threshold {number} -- The minimum speed that a point must have in order to be 
                                     characterized  a stop point.
@@ -30,101 +73,78 @@ def stop_points_based_segmentation(trajectories, identifier='mmsi', speed_thresh
     
     temp = []
     traj_id_ = 1
-    df = trajectories.copy().sort_values(by=[identifier, 'timestamp'])
-    
-    for traj_id, sdf in df.groupby(identifier, group_keys=False):
-        # Holds the stop points for each MMSI. It gets appended into temp after each iteration
-        stop_points = []
-        
-        # Gets all points with speed lower than the given threshold, i.e candidate stop points
-        slow_speed_points = sdf[sdf['speed'] <= speed_threshold].index
-            
-        k = 0
-        while not slow_speed_points.empty and k < len(slow_speed_points):
 
-            i = slow_speed_points[k]
-            center = i
-            center_k = sdf.loc[i]
+    for traj_id, sdf in trajectories.groupby('second_pass', group_keys=False):
+        grp_copy = sdf.copy(deep=False).reset_index(drop=True).sort_values(by='timestamp', ascending=True)
+        
+        # Stop points for each group
+        stop_points = []    
+        # Candidates points
+        slow_speed_points = grp_copy[grp_copy['calc_speed'] <= speed_threshold].index
+        
+        candidates_index = 0
+        while not slow_speed_points.empty and candidates_index < len(slow_speed_points):
+
+            center = slow_speed_points[candidates_index]
+            center_row = grp_copy.iloc[center]
             
             # Left Search
-            li = side_search(sdf.loc[:center - 1,], center_k, distance_threshold, 3600, i) 
-            #Right Search
-            ri = side_search(sdf.loc[center + 1:,], center_k, distance_threshold, 3600, i)
-            
+            li = side_search(grp_copy.iloc[:center], center_row, distance_threshold, time_threshold, speed_threshold)
+            # Right Search
+            ri = side_search(grp_copy.iloc[center + 1:], center_row, distance_threshold, time_threshold, speed_threshold)
+                 
             # If there is no right or left point closer than the given distance_threshold, moves to
             # the next candidate stop point
-                         
-            if not li and not ri:
-                k = k + 1
-                continue
             
-            # If a right point exists and not left
-            if not li:
-                stop_points.append(center)
-                try:
-                    _next = sdf[sdf['speed'] > speed_threshold].loc[ri + 1:]['timestamp'].idxmin()
-                except:
-                    break
-                slow_speed_points = sdf[sdf['speed'] < speed_threshold].loc[_next:].index
-                k = 0
-                continue
-            
-            # If a left point exists and right
-            if not ri:
-                stop_points.append(center)
-                try:
-                    _next = sdf[sdf['speed'] > speed_threshold].loc[center + 1:]['timestamp'].idxmin()
-                except:
-                    break
-                slow_speed_points = sdf[sdf['speed'] < speed_threshold].loc[_next:].index
-                k = 0
+            if li is None:
+                candidates_index = candidates_index + 1
                 continue
                 
-                
-            # Time based check
-            if (sdf.loc[ri]['timestamp'] - sdf.loc[li]['timestamp']) >= time_threshold:  
+            if ri is None:
                 stop_points.append(center)
                 try:
-                    _next = sdf[sdf['speed'] > speed_threshold].loc[ri + 1:]['timestamp'].idxmin()
+                    # If we are not at the end of the dataframe
+                    _next = df_copy.iloc[ri + 1:][grp_copy['calc_speed'] > speed_threshold]['timestamp'].idxmin()
+                    slow_speed_points = grp_copy.iloc[_next:][grp_copy['calc_speed'] <= speed_threshold].index
+                    candidates_index = 0
                 except:
                     break
-                    
-                slow_speed_points = sdf[sdf['speed'] < speed_threshold].loc[_next:].index
-                k = 0
-            else:
-                k = k + 1
-                
+        
+            left_limit = grp_copy.iloc[li]
+            right_limit = grp_copy.iloc[ri]
 
-        # Mark stop points by creating a new column 
-        sdf.loc[stop_points, 'stop'] = 'Yes'
+            
+            if (right_limit['timestamp'] - left_limit['timestamp']) >= time_threshold:  
+                stop_points.append(center)
+      
+                try:
+                    # If we are not at the end of the dataframe
+                    _next = df_copy.iloc[ri + 1:][grp_copy['calc_speed'] > speed_threshold]['timestamp'].idxmin()
+                    slow_speed_points = grp_copy.iloc[_next:][grp_copy['calc_speed'] <= speed_threshold].index
+                    candidates_index = 0
+                except:
+                    break
+            else:
+                candidates_index = candidates_index + 1
+                
+            
+        
+        
+        # Mark stop points
+        grp_copy.loc[stop_points, 'stop'] = 'Yes'
   
-        # Group points into trajectories
+        # Segment trips based on stop - points index position
         last_check = 0
         sdfs = []
-        for ind in stop_points[0:]:
-            sdfs.append(sdf.loc[last_check:ind])
+        for ind in stop_points:
+            sdfs.append(grp_copy.iloc[last_check:ind + 1])
             last_check = ind + 1
-        try:
-            sdfs.append(sdf.loc[stop_points[-1]:])
-        except:
-            pass
         
         for i in range(0,len(sdfs)):  
             sdfs[i].loc[:,'traj_id'] = traj_id_
             traj_id_ = traj_id_ + 1
     
-
+    
         temp.extend(sdfs) 
-    return temp
     
-    
-def side_search(trajectory, center_point, distance_threshold=5, time_threshold=300):
-    copy = trajectory.copy()
-    
-    copy['d_distance'] = _distance_difference(copy, center_point)
-    copy['d_time'] = _time_difference(copy['timestamp'], center_point['timestamp'])
-    
-    try:
-        return co[(co['d_distance'] <= distance_threshold) & (co['d_time'] <= time_threshold)]['d_distance'].idxmax()
-    except:
-        return None
+    return pd.concat(temp)
