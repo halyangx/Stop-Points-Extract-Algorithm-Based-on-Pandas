@@ -2,6 +2,7 @@ def side_search(partitioned_trajectory, center_point, distance_threshold, time_t
     """
     Used for calculating the left and right limits of a trajectory given a center point and the needed conditions.
     """
+    
     copy = partitioned_trajectory.copy(deep=False)
     # Calculates the haversine distance between the center and the remaining side points
     copy['d_distance'] = _distance_difference(copy, center_point)
@@ -11,15 +12,15 @@ def side_search(partitioned_trajectory, center_point, distance_threshold, time_t
     try:
         # If a point that satisfying the above conditions exists, return it
         # otherwise reutrn None
-        return copy[(copy['d_distance'] <= distance_threshold) 
-                    & (copy['d_time'] <= time_threshold) 
-                    & (copy['calc_speed'] <= speed_threshold) ]['d_distance'].idxmax()
+        return copy[
+            (copy['d_distance'] <= distance_threshold) 
+            & (copy['d_time'] <= 3600)]['d_distance'].idxmax()
     except ValueError:
         return None
 
 
     
-def stop_points_based_segmentation(trajectories, speed_threshold=2.0, distance_threshold=5.0, time_threshold=600):
+def stop_points_based_segmentation(trajectories, identifier='second_pass', speed_threshold=2.0, distance_threshold=5.0, time_threshold=300):
     """
     Given a DataFrame with lon, lat, timestamp, speed and an identifier column where each row describes a time ordered
     gps point, 'stop_points_based_segmentation' calculates the stop points and segments the DataFrame into individual
@@ -47,12 +48,11 @@ def stop_points_based_segmentation(trajectories, speed_threshold=2.0, distance_t
     exceeded. We choosed not to follow this approach as Python's higher level loops where not as efficienty as Pandas
     indexing and selecting. 
     
-    Thus during selecting the row with maximum distance under the given distance threshold we introduce two more conditional 
-    checks, the time based and speed check. By this way, we avoid choosing left/right limits that are close in distance but have 
-    a high time difference. Imagine if the object passed by the same spot before without stoping, it would be under the
-    distance threshould but this could have happened a different time - window.
+    Thus during selecting the row with maximum distance under the given distance threshold we introduce one more conditional 
+    check, the time based one. By this way, we avoid choosing left/right limits that are close in distance but have 
+    a high time difference. Imagine if the moving object passed by the same spot before without stoping, it would be under 
+    the distance threshould but this could have happened at different time - window.
     
-    In the same manner, the speed threshold condition avoids continious stop points.
     
     Arguments:
         trajectories {DataFrame} -- Data in Pandas DataFrame format. The geospatial data should be
@@ -70,11 +70,10 @@ def stop_points_based_segmentation(trajectories, speed_threshold=2.0, distance_t
         time_threshold {number} -- The minimum time to move through the given radius(distance_threshold)
     """
     
-    
     temp = []
     traj_id_ = 1
 
-    for traj_id, sdf in trajectories.groupby('second_pass', group_keys=False):
+    for traj_id, sdf in trajectories.groupby(identifier, group_keys=False):
         grp_copy = sdf.copy(deep=False).reset_index(drop=True).sort_values(by='timestamp', ascending=True)
         
         # Stop points for each group
@@ -84,7 +83,6 @@ def stop_points_based_segmentation(trajectories, speed_threshold=2.0, distance_t
         
         candidates_index = 0
         while not slow_speed_points.empty and candidates_index < len(slow_speed_points):
-
             center = slow_speed_points[candidates_index]
             center_row = grp_copy.iloc[center]
             
@@ -96,19 +94,11 @@ def stop_points_based_segmentation(trajectories, speed_threshold=2.0, distance_t
             # If there is no right or left point closer than the given distance_threshold, moves to
             # the next candidate stop point
             
-            if li is None:
+            if li is None or ri is None:
                 candidates_index = candidates_index + 1
                 continue
                 
-            if ri is None:
-                stop_points.append(center)
-                try:
-                    # If we are not at the end of the dataframe
-                    _next = df_copy.iloc[ri + 1:][grp_copy['calc_speed'] > speed_threshold]['timestamp'].idxmin()
-                    slow_speed_points = grp_copy.iloc[_next:][grp_copy['calc_speed'] <= speed_threshold].index
-                    candidates_index = 0
-                except:
-                    break
+
         
             left_limit = grp_copy.iloc[li]
             right_limit = grp_copy.iloc[ri]
@@ -116,13 +106,14 @@ def stop_points_based_segmentation(trajectories, speed_threshold=2.0, distance_t
             
             if (right_limit['timestamp'] - left_limit['timestamp']) >= time_threshold:  
                 stop_points.append(center)
-      
+                
                 try:
                     # If we are not at the end of the dataframe
-                    _next = df_copy.iloc[ri + 1:][grp_copy['calc_speed'] > speed_threshold]['timestamp'].idxmin()
+                    _next = grp_copy.iloc[ri + 1:][grp_copy['calc_speed'] > speed_threshold]['timestamp'].idxmin()
                     slow_speed_points = grp_copy.iloc[_next:][grp_copy['calc_speed'] <= speed_threshold].index
                     candidates_index = 0
-                except:
+                    
+                except ValueError:
                     break
             else:
                 candidates_index = candidates_index + 1
