@@ -16,7 +16,7 @@ def side_search(partitioned_trajectory, center_point, distance_threshold, time_t
             (copy['d_distance'] <= distance_threshold) 
             & (copy['d_time'] <= 3600)]['d_distance'].idxmax()
     except ValueError:
-        return None
+        return Nonea
 
 
     
