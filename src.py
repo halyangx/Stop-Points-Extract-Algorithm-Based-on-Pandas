@@ -1,3 +1,5 @@
+import pandas as pd
+
 def side_search(partitioned_trajectory, center_point, distance_threshold, time_threshold, speed_threshold):
     """
     Used for calculating the left and right limits of a trajectory given a center point and the needed conditions.
@@ -16,7 +18,7 @@ def side_search(partitioned_trajectory, center_point, distance_threshold, time_t
             (copy['d_distance'] <= distance_threshold) 
             & (copy['d_time'] <= 3600)]['d_distance'].idxmax()
     except ValueError:
-        return Nonea
+        return None
 
 
     

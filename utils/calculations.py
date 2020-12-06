@@ -68,7 +68,7 @@ def calculate_time_difference(*args, **kwargs):
                 df = args[0]
                 df['time_diff'] = np.abs(
                     df[kwargs.get('timestamp')].shift(1).values - df[kwargs.get('timestamp')].values)
-                return df
+                return df['time_diff']
             else:
                 raise ValueError(f'The given {type(args[0])} must contains column 1. timestamp')
         elif isinstance(args[0], pd.Series):
@@ -88,7 +88,7 @@ def calculate_distance(*args, **kwargs):
                 df['dis_diff'] = _haversine_np(df[kwargs.get('lon')].values, df[kwargs.get('lat')].values,
                                                df[kwargs.get('lon')].shift(1).values,
                                                df[kwargs.get('lat')].shift(1).values)
-                return df
+                return df['dis_diff']
             else:
                 raise ValueError(f'The given {type(args[0])} must contains columns 1.lon, 2.lat')
 
@@ -102,7 +102,7 @@ def calculate_speed(*args, **kwargs):
             if 'time_diff' in kwargs and 'dis_diff' in kwargs:
                 df = args[0]
                 df['calc_speed'] = df[kwargs.get('dis_diff')].values / df[kwargs.get('time_diff')].values
-                return df
+                return df['calc_speed']
             else:
                 raise ValueError(f'The given {type(args[0])} must contains column 1.time_diff, 2.dis_diff')
     elif len(args) == 2:
